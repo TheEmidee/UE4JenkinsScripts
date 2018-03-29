@@ -1,0 +1,27 @@
+env.PROJECT_NAME = "YourGameName"
+
+node( 'master' ) {
+    ws( "D:/Jenkins_${env.PROJECT_NAME}" ) {
+        properties([
+            disableConcurrentBuilds(),
+            buildDiscarder( logRotator( numToKeepStr: '1' ) )
+        ])
+
+        slackSend channel: 'jenkins', color: 'good', message: "Build started : #${env.BUILD_NUMBER} - ${env.JOB_NAME} (<${env.BUILD_URL}|Open>)"
+
+        try { 
+            git scm
+            
+            [ 'WindowsNoEditor', 'XboxOne', 'PS4', 'Switch' ].each {
+                stage( 'DDC ' + "${it}" ) {
+                    bat "D:/Jenkins_UnrealEngine/Engine/Binaries/Win64/UE4Editor.exe -run=DerivedDataCache -fill -Project=\"${WORKSPACE}/${env.PROJECT_NAME}.uproject\" -ProjectOnly -TargetPlatform=${it}  -waitmutex"
+                }
+            }
+
+            slackSend channel: 'jenkins', color: 'good', message: "Successfully processed : #${env.BUILD_NUMBER} - ${env.JOB_NAME} (<${env.BUILD_URL}|Open>)"
+        } catch ( Exception err ) {
+            slackSend channel: 'jenkins', color: 'danger', message: "Failed to process : #${env.BUILD_NUMBER} - ${env.JOB_NAME} (<${env.BUILD_URL}|Open>)"
+            currentBuild.result = "FAILURE"
+        }
+    }
+}

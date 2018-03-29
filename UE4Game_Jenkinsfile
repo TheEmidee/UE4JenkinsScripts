@@ -1,0 +1,299 @@
+env.PROJECT_NAME = "YourGameName"
+
+// If the job to run targets a branch which is already being built, cancel the already running job
+abortPreviousRunningBuilds()
+
+def tasks = [:]
+
+// Expose some properties in the UI of jenkins when we run the job manually
+properties([
+    parameters([
+        string( name: "ROOT_ARCHIVE_DIRECTORY", defaultValue: 'V:/', trim: true ),
+        booleanParam( name : "DEPLOY_BUILD", defaultValue: false )
+    ]),
+    buildDiscarder( logRotator( numToKeepStr: '1' ) )
+])
+
+stage( 'Check parameters' ) {
+    try {
+        if ( params.ROOT_ARCHIVE_DIRECTORY == "" ) {
+            error "ROOT_ARCHIVE_DIRECTORY must be set !"
+        }
+    } catch ( Exception err ) {
+        slackSend channel: 'jenkins', color: 'danger', message: "Build failed : ${env.JOB_NAME} (<${env.BUILD_URL}|Open>)"
+        currentBuild.result = "FAILURE"
+    }
+}
+
+/* 
+Each platform will be built in parallel. Parallelize accross all the slaves
+Better parallelize each platform than each pull request, to save time when only 
+a few jobs are running
+*/
+[ 'Win64', 'XboxOne', 'PS4', 'Switch' ].each {
+    tasks[ it ] = {
+
+        env.BRANCH_TYPE = getBranchType( env.BRANCH_NAME )
+        env.DEPLOYMENT_ENVIRONMENT = getBranchDeploymentEnvironment( env.BRANCH_TYPE )
+        env.CLIENT_CONFIG = getClientConfig( env.DEPLOYMENT_ENVIRONMENT )
+
+        String labels = getNodeLabels()
+
+        // Some jobs must be executed exclusively on a dedicated node of jenkins
+        node( labels ) {
+            // Some nodes store the job workspace (and the UE4 installed build) 
+            // in a different directory
+            env.WORKSPACE = getWorkSpace()
+
+            ws( env.WORKSPACE ) {
+
+                // For shipping builds, clear to force a full rebuild + full cook
+                if ( env.DEPLOYMENT_ENVIRONMENT == "shipping" ) {
+                    deleteDir()
+                }
+
+                stage( 'Checkout' ) {
+                    sendMessageToSlack( "Build started", it, "#0000FF" )
+                    checkout scm
+                }
+
+                try {
+                    // Always build manually the editor due to a bug: 
+                    // using RunUAT does not always compile the UE4Editor-XXX.dll
+                    buildEditor( it )
+                    // Do the actual build cook run; All specialized work is handled here
+                    buildCookRun( it )
+                    sendMessageToSlack( "Successfully processed", it, "good" )
+                } catch ( Exception err ) {
+                    sendMessageToSlack( "Failed to process", it, "danger", "Reason : " + err.toString() )
+                    
+                    error "Failed to process " + it + " : " + err.toString()
+                }
+            }
+        }
+    }
+}
+
+// Run all tasks; We are done!
+parallel tasks
+
+// ------------------------------------//
+// All the helper functions used above //
+// ------------------------------------//
+
+def getBranchType( String branch_name ) {
+    if ( branch_name =~ ".*develop" ) {
+        return "development"
+    } else if ( branch_name =~ ".*release/.*" ) {
+        return "release"
+    } else if ( branch_name =~ ".*master" ) {
+        return "master"
+    }
+
+    return "test";
+}
+
+def getBranchDeploymentEnvironment( String branch_type ) {
+    if ( branch_type == "development" ) {
+        return "development"
+    } else if ( branch_type == "release" ) {
+        return "release"
+    }else if ( branch_type == "master" ) {
+        return "shipping"
+    }
+    
+    return "testing";
+}
+
+def getClientConfig( String environment_deployment ) {
+    if ( environment_deployment == "shipping" ) {
+        return "Shipping"
+    }
+
+    // release and development return Development
+    return "Development"
+}
+
+def sendMessageToSlack( String message, String platform, String color, String suffix = "" ) {
+
+    String full_message = message + " : #${env.BUILD_NUMBER} - ${env.JOB_NAME} - " + platform + " On ${env.NODE_NAME} (<${env.BUILD_URL}|Open>)"
+
+    if ( !( suffix?.trim() ) ) {
+        full_message += " " + suffix
+    }
+
+    slackSend channel: 'jenkins', color: color, message: full_message
+}
+
+// Manually build the editor of the game using UnrealBuiltTool
+def buildEditor( String platform ) {
+    stage ( "Build Editor Win64 for " + platform ) {
+        bat getUE4DirectoryFolder() + "/Engine/Binaries/DotNET/UnrealBuildTool.exe ${env.PROJECT_NAME}Editor Win64 Development ${env.WORKSPACE}/${env.PROJECT_NAME}.uproject"
+    }
+}
+
+def buildCookRun( String platform ) {
+
+    // Dont archive for bugfix / hotfix / etc...
+    Boolean can_archive_project = ( env.DEPLOYMENT_ENVIRONMENT == "development" 
+        || env.DEPLOYMENT_ENVIRONMENT == "shipping" )
+
+    // Cook if we want to archive (obviously) and always cook on Win64 to check PRs won't break
+    Boolean can_cook_project = can_archive_project || ( platform == "Win64" )
+
+    stage ( "Build " + platform ) {
+        bat getUATCommonArguments( platform ) + getUATBuildArguments()
+    }
+
+    if ( can_cook_project ) {
+        stage ( "Cook " + platform ) {
+
+            // Some platforms may need specific commands to be executed before the cooker starts
+            executePlatformPreCookCommands( platform )
+            bat getUATCommonArguments( platform ) + getUATCookArguments( platform, env.CLIENT_CONFIG, can_archive_project )
+            executePlatformPostCookCommands( platform )
+        }
+    }
+}
+
+def getWorkSpace() {
+    return getWorkSpaceRootFolder() + getWorkSpaceFolderName()
+}
+
+def getArchiveDirectory( String client_config ) {
+    return env.ROOT_ARCHIVE_DIRECTORY + env.PROJECT_NAME + "/" + client_config
+}
+
+def getWorkSpaceFolderName() {
+    // Shipping jobs always run on the master node, in a specific folder
+    if ( env.DEPLOYMENT_ENVIRONMENT == "shipping" ) {
+        return "Jenkins_${env.PROJECT_NAME}_Master"
+    } else {
+        // Use same folder for PRs and develop since we now have multiple nodes working in parallel
+        return "Jenkins_${env.PROJECT_NAME}"
+    }
+}
+
+def getWorkSpaceRootFolder() {
+    if ( env.NODE_NAME == "master" ) {
+        return "D:/"
+    }
+
+    return "C:/"
+}
+
+def getNodeLabels() {
+    // Do all shipping builds on master for storage purposes
+    if ( env.DEPLOYMENT_ENVIRONMENT == "shipping" ) {
+        return "master"
+    }
+
+    return "ue4"
+}
+
+def getUE4DirectoryFolder() {
+    if ( env.NODE_NAME == "master" ) {
+        return "D:/UE4/Windows"
+    }
+
+    return "C:/UE4/Windows"
+}
+
+def getUATCommonArguments( String platform ) {
+    String result = getUE4DirectoryFolder() + "/Engine/Build/BatchFiles/RunUAT.bat BuildCookRun -project=${env.WORKSPACE}/${env.PROJECT_NAME}.uproject -utf8output -noP4 -platform=" + platform + " -clientconfig=" + env.CLIENT_CONFIG
+
+    result += getUATCompileFlags()
+
+    if ( env.CLIENT_CONFIG == "Shipping" ) {
+        result += " -clean"
+    }
+
+    return result
+}
+
+def getUATCompileFlags() {
+    // -nocompile because we already have the automation tools
+    // -nocompileeditor because we built it before
+    return " -nocompile -nocompileeditor -installed -ue4exe=UE4Editor-Cmd.exe"
+}
+
+def getUATBuildArguments() {
+    // build only. dont cook. This is done in a separate stage
+    return " -build -skipcook"
+}
+
+def getUATCookArguments( String platform, String client_config, Boolean archive_project ) {
+    String result = " -allmaps -cook"
+    
+    result += getUATCookArgumentsFromClientConfig( client_config)
+    result += getUATCookArgumentsForPlatform( platform )
+
+    if ( archive_project ) {
+        result += " -pak -package -stage -archive -archivedirectory=" + getArchiveDirectory( client_config )
+    }
+
+    return result;
+}
+
+def getUATCookArgumentsFromClientConfig( String client_config ) {
+    // Do not cook what has already been cooked if possible
+    if ( client_config == "Development" ) {
+        return " -iterativecooking"
+    }
+    // but not in shipping; Do a full cook.
+    else if ( client_config == "Shipping" ) {
+        return " -distribution"
+    }
+}
+
+def getUATCookArgumentsForPlatform( String platform ) {
+    String result = ""
+
+    // See https://docs.unrealengine.com/latest/INT/Engine/Basics/Projects/Packaging/
+    if ( platform != "PS4" ) {
+        result += " -compressed"
+    }
+
+    if ( params.DEPLOY_BUILD ) {
+        if ( platform == "PS4" ) {
+            result += " -deploy -cmdline=\" -Messaging\" -device=PS4@192.168.2.217"
+        }
+        else if ( platform == "XboxOne" ) {
+            result += " -deploy -cmdline=\" -Messaging\" -device=XboxOne@192.168.1.13"
+        }
+    }
+
+    return result
+}
+
+def executePlatformPreCookCommands( String platform ) {
+    if ( platform == "PS4" ) {
+        
+    }
+}
+
+def executePlatformPostCookCommands( String platform ) {
+    if ( platform == "PS4" ) {
+        
+    }
+}
+
+// Note you will have to add some exceptions in the Jenkins security options to allow this function to run
+def abortPreviousRunningBuilds() {
+  def hi = Jenkins.instance
+  def pname = env.JOB_NAME.split('/')[0]
+
+  hi.getItem( pname ).getItem(env.JOB_BASE_NAME).getBuilds().each{ build ->
+    def exec = build.getExecutor()
+
+    if ( build.number < currentBuild.number && exec != null ) {
+      exec.interrupt(
+        Result.ABORTED,
+        new CauseOfInterruption.UserInterruption(
+          "Aborted by #${currentBuild.number}"
+        )
+      )
+      println("Aborted previous running build #${build.number}")
+    }
+  }
+}

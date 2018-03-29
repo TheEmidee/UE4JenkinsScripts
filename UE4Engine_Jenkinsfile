@@ -1,0 +1,28 @@
+node( 'master' ) {
+    ws( "D:/Jenkins_UnrealEngine" ) {
+        properties([
+            disableConcurrentBuilds(),
+            buildDiscarder( logRotator( numToKeepStr: '1' ) )
+        ])
+
+        slackSend channel: 'jenkins', color: 'good', message: "Build started : #${env.BUILD_NUMBER} - ${env.JOB_NAME} (<${env.BUILD_URL}|Open>)"
+
+        try { 
+            stage( 'Build' ) {
+                bat "${WORKSPACE}/Engine/Build/BatchFiles/RunUAT.bat BuildGraph -target=\"Make Installed Build Win64\" -NoXGE -set:WithFeaturePacks=false -set:WithDDC=false -set:WithTVOS=false -set:WithLinux=false -set:WithIOS=false -set:WithAndroid=false -set:WithMac=false -set:WithHTML5=false -set:WithWin64=true -set:WithWin32=false -set:WithPS4=true -set:WithSwitch=true -set:WithXboxOne=true -script=\"${WORKSPACE}/Engine/Build/InstalledEngineBuild.xml\""
+            }
+            /*
+            stage( 'Zip' ) {
+                bat "jar -cMf D:/UE4_JenkinsOutput/UE4.zip D:/UE4_JenkinsOutput"
+            }
+            stage( 'Deploy' ) {
+                bat "cp D:/UE4_JenkinsOutput/UE4.zip V:/UE4"
+            }*/
+
+            slackSend channel: 'jenkins', color: 'good', message: "Successfully processed : #${env.BUILD_NUMBER} - ${env.JOB_NAME} (<${env.BUILD_URL}|Open>)"
+        } catch ( Exception err ) {
+            slackSend channel: 'jenkins', color: 'danger', message: "Failed to process : #${env.BUILD_NUMBER} - ${env.JOB_NAME} (<${env.BUILD_URL}|Open>)"
+            currentBuild.result = "FAILURE"
+        }
+    }
+}
