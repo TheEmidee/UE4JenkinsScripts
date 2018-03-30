@@ -17,6 +17,9 @@ node( 'master' ) {
             stage( 'Clean' ) {
                 bat "rm -rf ${params.OVERRIDE_OUTPUT_DIRECTORY}/*"
             }
+            stage( 'Git checkout' ) {
+                git branch: '', credentialsId: '', url: 'git@github.com:XXX/UnrealEngine.git'
+            }
             stage( 'Build' ) {
                 bat getBuildGraphCommandLine()
             }
