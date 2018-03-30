@@ -1,6 +1,12 @@
 node( 'master' ) {
     ws( "D:/Jenkins_UnrealEngine" ) {
         properties([
+            parameters([
+                string( name: "OVERRIDE_OUTPUT_DIRECTORY", defaultValue: 'D:/UE4_JenkinsOutput', trim: true ),
+                string( name: "ARCHIVE_DIRECTORY", defaultValue: 'V:/UE4', trim: true ),
+                booleanParam( name : "ZIP_OUTPUT", defaultValue: true ),
+                booleanParam( name : "ARCHIVE_OUTPUT", defaultValue: true )
+            ]),
             disableConcurrentBuilds(),
             buildDiscarder( logRotator( numToKeepStr: '1' ) )
         ])
@@ -8,16 +14,26 @@ node( 'master' ) {
         slackSend channel: 'jenkins', color: 'good', message: "Build started : #${env.BUILD_NUMBER} - ${env.JOB_NAME} (<${env.BUILD_URL}|Open>)"
 
         try { 
+            stage( 'Clean' ) {
+                bat "rm -rf ${params.OVERRIDE_OUTPUT_DIRECTORY}/*"
+            }
             stage( 'Build' ) {
-                bat "${WORKSPACE}/Engine/Build/BatchFiles/RunUAT.bat BuildGraph -target=\"Make Installed Build Win64\" -NoXGE -set:WithFeaturePacks=false -set:WithDDC=false -set:WithTVOS=false -set:WithLinux=false -set:WithIOS=false -set:WithAndroid=false -set:WithMac=false -set:WithHTML5=false -set:WithWin64=true -set:WithWin32=false -set:WithPS4=true -set:WithSwitch=true -set:WithXboxOne=true -script=\"${WORKSPACE}/Engine/Build/InstalledEngineBuild.xml\""
+                bat getBuildGraphCommandLine()
             }
-            /*
-            stage( 'Zip' ) {
-                bat "jar -cMf D:/UE4_JenkinsOutput/UE4.zip D:/UE4_JenkinsOutput"
+            if ( params.ZIP_OUTPUT ) {
+                stage( 'Zip' ) {
+                    bat "jar -cMf ${params.OVERRIDE_OUTPUT_DIRECTORY}/UE4.zip ${params.OVERRIDE_OUTPUT_DIRECTORY}"
+                }
             }
-            stage( 'Deploy' ) {
-                bat "cp D:/UE4_JenkinsOutput/UE4.zip V:/UE4"
-            }*/
+            if ( params.ARCHIVE_OUTPUT ) {
+                stage( 'Deploy' ) {
+                    if ( params.ZIP_OUTPUT ) {
+                        bat "cp ${params.OVERRIDE_OUTPUT_DIRECTORY}/UE4.zip V:/${params.ARCHIVE_DIRECTORY}"
+                    } else {
+                        bat "cp -r ${params.OVERRIDE_OUTPUT_DIRECTORY} V:/${params.ARCHIVE_DIRECTORY}"
+                    }
+                }
+            }
 
             slackSend channel: 'jenkins', color: 'good', message: "Successfully processed : #${env.BUILD_NUMBER} - ${env.JOB_NAME} (<${env.BUILD_URL}|Open>)"
         } catch ( Exception err ) {
@@ -25,4 +41,39 @@ node( 'master' ) {
             currentBuild.result = "FAILURE"
         }
     }
+}
+
+def getBuildGraphCommandLine() {
+    String result = "${WORKSPACE}/Engine/Build/BatchFiles/RunUAT.bat BuildGraph -target=\"Make Installed Build Win64\" -NoXGE "    
+    result += getOptionsArguments()
+    result += " -set:OutputDirectoryOverride=${params.OVERRIDE_OUTPUT_DIRECTORY}"
+    result += " -script=\"${WORKSPACE}/Engine/Build/InstalledEngineBuild.xml\""
+
+    return result
+}
+
+def getOptionsArguments() {
+    String result = ""
+
+    def map = [
+        "DDC":false,
+        "FeaturePacks":false,
+        "Win64":true,
+        "PS4":true,
+        "Switch":true,
+        "XboxOne":true,
+        "TVOS":false,
+        "Linux":false,
+        "IOS":false,
+        "Android":false,
+        "Mac":false,
+        "HTML5":false,
+        "Win32":false
+    ]
+    
+    map.each { key, value ->
+        result += " -set:With${key}=${value}"
+    }
+
+    return result
 }
