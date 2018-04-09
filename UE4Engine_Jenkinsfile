@@ -4,6 +4,7 @@ node( 'master' ) {
             parameters([
                 string( name: "OVERRIDE_OUTPUT_DIRECTORY", defaultValue: 'D:/UE4_JenkinsOutput', trim: true ),
                 string( name: "ARCHIVE_DIRECTORY", defaultValue: 'V:/UE4', trim: true ),
+                booleanParam( name : "SYNC_ONLY", defaultValue: false ),
                 booleanParam( name : "ZIP_OUTPUT", defaultValue: true ),
                 booleanParam( name : "ARCHIVE_OUTPUT", defaultValue: true ),
                 booleanParam( name : "SYNC_SLAVES", defaultValue: true )
@@ -15,34 +16,36 @@ node( 'master' ) {
         slackSend channel: 'jenkins', color: 'good', message: "Build started : #${env.BUILD_NUMBER} - ${env.JOB_NAME} (<${env.BUILD_URL}|Open>)"
 
         try { 
-            stage( 'Clean' ) {
-                bat "rm -rf ${params.OVERRIDE_OUTPUT_DIRECTORY}/*"
-            }
-            stage( 'Git checkout' ) {
-                git branch: '', credentialsId: '', url: 'git@github.com:XXX/UnrealEngine.git'
-            }
-            stage( 'Build' ) {
-                bat getBuildGraphCommandLine()
-            }
-            if ( params.ZIP_OUTPUT ) {
-                stage( 'Zip' ) {
-                    bat "jar -cMf ${params.OVERRIDE_OUTPUT_DIRECTORY}/UE4.zip ${params.OVERRIDE_OUTPUT_DIRECTORY}"
+            if ( !params.SYNC_ONLY ) {
+                    stage( 'Clean' ) {
+                    bat "rm -rf ${params.OVERRIDE_OUTPUT_DIRECTORY}/*"
                 }
-            }
-            if ( params.ARCHIVE_OUTPUT ) {
-                stage( 'Deploy' ) {
-                    if ( params.ZIP_OUTPUT ) {
-                        bat "cp ${params.OVERRIDE_OUTPUT_DIRECTORY}/UE4.zip V:/${params.ARCHIVE_DIRECTORY}"
-                    } else {
-                        bat "cp -r ${params.OVERRIDE_OUTPUT_DIRECTORY} V:/${params.ARCHIVE_DIRECTORY}"
+                stage( 'Git checkout' ) {
+                    git branch: '', credentialsId: '', url: 'git@github.com:XXX/UnrealEngine.git'
+                }
+                stage( 'Build' ) {
+                    bat getBuildGraphCommandLine()
+                }
+                if ( params.ZIP_OUTPUT ) {
+                    stage( 'Zip' ) {
+                        bat "jar -cMf ${params.OVERRIDE_OUTPUT_DIRECTORY}/UE4.zip ${params.OVERRIDE_OUTPUT_DIRECTORY}"
+                    }
+                }
+                if ( params.ARCHIVE_OUTPUT ) {
+                    stage( 'Deploy' ) {
+                        if ( params.ZIP_OUTPUT ) {
+                            bat "cp ${params.OVERRIDE_OUTPUT_DIRECTORY}/UE4.zip V:/${params.ARCHIVE_DIRECTORY}"
+                        } else {
+                            bat "cp -r ${params.OVERRIDE_OUTPUT_DIRECTORY} V:/${params.ARCHIVE_DIRECTORY}"
+                        }
                     }
                 }
             }
 
-            if ( params.SYNC_SLAVES ) {
+            if ( params.SYNC_ONLY || params.SYNC_SLAVES ) {
                 // See UE4Engine_SyncSlaves jenkins file for the setup of the following job
-                state ( 'Sync Nodes' ) {
-                    build 'UE4_SyncSlaves'
+                stage ( 'Sync Nodes' ) {
+                    build job: 'UE4_SyncSlaves', wait: false
                 }
             }
 
