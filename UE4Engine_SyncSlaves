@@ -1,0 +1,38 @@
+// Update with the list of all the node names to run that job on
+// Could use parallel if the slaves are all on different physical machines (which is not the case for us)
+[ 'master', 'UE4Slave', 'UE4Slave2', 'UE4Slave3' ].each {
+    node( it ) {
+        stage( 'Sync UE4 on ' + it ) {
+            syncUE();
+        }   
+    }
+}
+
+def syncUE() {
+    String source;
+
+    if ( env.NODE_NAME == "master" ) {
+        source = "D:\\UE4_JenkinsOutput\\Windows"
+    } else {
+        source = "\\\\192.168.3.204\\UE4_JenkinsOutput\\Windows"
+
+        // To avoid any connection errors
+        bat "NET USE \\\\192.168.3.204 /u:build1 PASSWORD"
+    }
+
+    def status = bat returnStatus: true, script: "robocopy " + source + " " + getUE4DirectoryFolder() + " /MIR /FFT /R:3 /W:10 /Z /NP /NDL"
+
+    // To robocopy, a returned code < 3 is a success :/
+    if ( status < 0 || status > 3 )
+    {
+        error("ROBOCOPY failed")
+    }
+}
+
+def getUE4DirectoryFolder() {
+    if ( env.NODE_NAME == "master" ) {
+        return "D:/UE4/Windows"
+    }
+
+    return "C:/UE4/Windows"
+}

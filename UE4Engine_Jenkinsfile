@@ -5,7 +5,8 @@ node( 'master' ) {
                 string( name: "OVERRIDE_OUTPUT_DIRECTORY", defaultValue: 'D:/UE4_JenkinsOutput', trim: true ),
                 string( name: "ARCHIVE_DIRECTORY", defaultValue: 'V:/UE4', trim: true ),
                 booleanParam( name : "ZIP_OUTPUT", defaultValue: true ),
-                booleanParam( name : "ARCHIVE_OUTPUT", defaultValue: true )
+                booleanParam( name : "ARCHIVE_OUTPUT", defaultValue: true ),
+                booleanParam( name : "SYNC_SLAVES", defaultValue: true )
             ]),
             disableConcurrentBuilds(),
             buildDiscarder( logRotator( numToKeepStr: '1' ) )
@@ -35,6 +36,13 @@ node( 'master' ) {
                     } else {
                         bat "cp -r ${params.OVERRIDE_OUTPUT_DIRECTORY} V:/${params.ARCHIVE_DIRECTORY}"
                     }
+                }
+            }
+
+            if ( params.SYNC_SLAVES ) {
+                // See UE4Engine_SyncSlaves jenkins file for the setup of the following job
+                state ( 'Sync Nodes' ) {
+                    build 'UE4_SyncSlaves'
                 }
             }
 
