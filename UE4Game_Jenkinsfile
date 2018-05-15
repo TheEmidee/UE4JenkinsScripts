@@ -25,61 +25,79 @@ stage( 'Check parameters' ) {
     }
 }
 
-/* 
-Each platform will be built in parallel. Parallelize accross all the slaves
-Better parallelize each platform than each pull request, to save time when only 
-a few jobs are running
-*/
-[ 'Win64', 'XboxOne', 'PS4', 'Switch' ].each {
-    tasks[ it ] = {
+env.BRANCH_TYPE = getBranchType( env.BRANCH_NAME )
+env.DEPLOYMENT_ENVIRONMENT = getBranchDeploymentEnvironment( env.BRANCH_TYPE )
+env.CLIENT_CONFIG = getClientConfig( env.DEPLOYMENT_ENVIRONMENT )
 
-        env.BRANCH_TYPE = getBranchType( env.BRANCH_NAME )
-        env.DEPLOYMENT_ENVIRONMENT = getBranchDeploymentEnvironment( env.BRANCH_TYPE )
-        env.CLIENT_CONFIG = getClientConfig( env.DEPLOYMENT_ENVIRONMENT )
-
-        String labels = getNodeLabels()
-
-        // Some jobs must be executed exclusively on a dedicated node of jenkins
-        node( labels ) {
-            // Some nodes store the job workspace (and the UE4 installed build) 
-            // in a different directory
-            env.WORKSPACE = getWorkSpace()
-
-            ws( env.WORKSPACE ) {
-
-                // For shipping builds, clear to force a full rebuild + full cook
-                if ( env.DEPLOYMENT_ENVIRONMENT == "shipping" ) {
-                    deleteDir()
-                }
-
-                stage( 'Checkout' ) {
-                    sendMessageToSlack( "Build started", it, "#0000FF" )
-                    checkout scm
-                }
-
-                try {
-                    // Always build manually the editor due to a bug: 
-                    // using RunUAT does not always compile the UE4Editor-XXX.dll
-                    buildEditor( it )
-                    // Do the actual build cook run; All specialized work is handled here
-                    buildCookRun( it )
-                    sendMessageToSlack( "Successfully processed", it, "good" )
-                } catch ( Exception err ) {
-                    sendMessageToSlack( "Failed to process", it, "danger", "Reason : " + err.toString() )
-                    
-                    error "Failed to process " + it + " : " + err.toString()
-                }
-            }
-        }
+if ( env.DEPLOYMENT_ENVIRONMENT == "shipping" ) {
+    // Shipping builds are not processed in parallel, but sequentially on the same slave.
+    // This allows to dedicate less storage on the slaves
+    // They are also processed in a separate workspace, because a git clean is called before and we dont want to screw up iterative cooking
+    [ 'Win64', 'XboxOne', 'PS4', 'Switch' ].each {
+        buildPlatform( it )
     }
 }
+else {
+    def tasks = [:]
 
-// Run all tasks; We are done!
-parallel tasks
+    /* 
+    Each platform will be built in parallel. Parallelize accross all the slaves
+    Better parallelize each platform than each pull request, to save time when only 
+    a few jobs are running
+    */
+    [ 'Win64', 'XboxOne', 'PS4', 'Switch' ].each {
+        tasks[ it ] = {
+            buildPlatform( it )
+        }
+    }
+
+    parallel tasks
+}
 
 // ------------------------------------//
 // All the helper functions used above //
 // ------------------------------------//
+
+def buildPlatform( String platform ) {
+    String labels = getNodeLabels()
+
+    // Some jobs must be executed exclusively on a dedicated node of jenkins
+    node( labels ) {
+        // Some nodes store the job workspace (and the UE4 installed build) in a different directory
+        env.WORKSPACE = getWorkSpace()
+
+        ws( env.WORKSPACE ) {
+
+            // Checkout all the time for parallelized builds, and only once for the first processed platform
+            if ( env.DEPLOYMENT_ENVIRONMENT != "shipping" || platform == "Win64" ) {
+                stage( 'Checkout' ) {
+                    sendMessageToSlack( "Build started", platform, "#0000FF" )
+
+                    if ( env.DEPLOYMENT_ENVIRONMENT == "shipping" && platform == "Win64" ) {
+                        bat "git clean -fdx"
+                    }
+                    
+                    checkout scm
+                }
+            }
+
+            try {
+                if ( env.DEPLOYMENT_ENVIRONMENT != "shipping" || platform == "Win64" ) {
+                    // Always build manually the editor due to a bug: 
+                    // using RunUAT does not always compile the UE4Editor-XXX.dll
+                    buildEditor( platform )
+                }
+                // Do the actual build cook run; All specialized work is handled here
+                buildCookRun( platform )
+                sendMessageToSlack( "Successfully processed", platform, "good" )
+            } catch ( Exception err ) {
+                sendMessageToSlack( "Failed to process", platform, "danger", "Reason : " + err.toString() )
+                
+                error "Failed to process " + platform + " : " + err.toString()
+            }
+        }
+    }
+}
 
 def getBranchType( String branch_name ) {
     if ( branch_name =~ ".*develop" ) {
